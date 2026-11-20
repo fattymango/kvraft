@@ -1,0 +1,46 @@
+x-build: &build
+  context: .
+  dockerfile: Dockerfile
+
+x-peers: &peers "--peers=kvnode0:9000,kvnode1:9000,kvnode2:9000,kvnode3:9000,kvnode4:9000"
+
+services:
+  kvnode0:
+    build: *build
+    hostname: kvnode0
+    command: ["--id=0", *peers, "--data=/data"]
+    volumes: [kvnode0-data:/data]
+  kvnode1:
+    build: *build
+    hostname: kvnode1
+    command: ["--id=1", *peers, "--data=/data"]
+    volumes: [kvnode1-data:/data]
+  kvnode2:
+    build: *build
+    hostname: kvnode2
+    command: ["--id=2", *peers, "--data=/data"]
+    volumes: [kvnode2-data:/data]
+  kvnode3:
+    build: *build
+    hostname: kvnode3
+    command: ["--id=3", *peers, "--data=/data"]
+    volumes: [kvnode3-data:/data]
+  kvnode4:
+    build: *build
+    hostname: kvnode4
+    command: ["--id=4", *peers, "--data=/data"]
+    volumes: [kvnode4-data:/data]
+
+  kvgateway:
+    build: *build
+    entrypoint: ["/kvgateway"]
+    command: ["--addr=:8080", *peers]
+    ports: ["18080:8080"]
+    depends_on: [kvnode0, kvnode1, kvnode2, kvnode3, kvnode4]
+
+volumes:
+  kvnode0-data:
+  kvnode1-data:
+  kvnode2-data:
+  kvnode3-data:
+  kvnode4-data:
