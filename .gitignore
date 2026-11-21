@@ -1,3 +1,9 @@
 /kvnode
 /kvgateway
 *.bin
+
+# viz/sim/wasm build artifacts and generated frontend site
+/viz/dist/
+/viz/web/node_modules/
+/viz/web/public/raftviz.wasm
+/viz/web/public/wasm_exec.js
