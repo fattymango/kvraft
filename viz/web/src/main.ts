@@ -90,7 +90,7 @@ const POPUP: Record<string, { text: string; color: string }> = {
 };
 const POPUP_MS = 1100;
 const ELECTION_ACTION = new Set(["become_candidate", "request_vote_sent", "vote_granted", "vote_denied", "become_leader"]);
-const MAX_POPUPS = 4; // words stacked on one gopher at once
+const MAX_POPUPS = 3; // words stacked on one gopher at once
 const LOG_LINES = 120;
 const STEP_BUDGET_MS = 8;
 
@@ -183,6 +183,7 @@ class App {
   private crowdSprites: HTMLCanvasElement[] = [];
   private crowdScaled: HTMLCanvasElement[] = [];
   private crowdScaledW = 0;
+  private cachesLost = false; // set when the browser discarded a cached canvas; rebuilt next frame
   private tool: Tool | null = null;
   private isolated = new Map<number, number>(); // node -> when its bubble went up
   private fx: { kind: Tool | "shatter"; node: number; start: number; done: boolean }[] = [];
@@ -322,14 +323,9 @@ class App {
     });
     this.tintCanvas.width = this.gopherImg.naturalWidth;
     this.tintCanvas.height = this.gopherImg.naturalHeight;
-    // pre-tinted spectator variants so the crowd isn't a wall of clones
-    this.crowdSprites = [null, "#60a5fa", "#f472b6", "#a78bfa", "#34d399", "#fb923c"].map((col) => {
-      const c = document.createElement("canvas");
-      c.width = this.tintCanvas.width;
-      c.height = this.tintCanvas.height;
-      c.getContext("2d")!.drawImage(col ? this.tintedGopher(col) : this.gopherImg, 0, 0);
-      return c;
-    });
+    this.buildCrowdSprites();
+    // the browser may drop canvas contents (GPU reset, sleep, memory pressure)
+    this.canvas.addEventListener("contextrestored", () => (this.cachesLost = true));
     this.api = await loadWasm("/raftviz.wasm");
     this.bomber = new Bomber(this.api);
     // snapshots keep the log short; without them every step got slower as the log grew
@@ -948,9 +944,7 @@ class App {
   buildBackground(): HTMLCanvasElement {
     const W = this.canvas.width;
     const H = this.canvas.height;
-    const c = document.createElement("canvas");
-    c.width = W;
-    c.height = H;
+    const c = this.cacheCanvas(W, H);
     const g = c.getContext("2d")!;
     let seed = 1337;
     const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
@@ -1237,6 +1231,39 @@ class App {
     return spots.sort((p, q) => p.y - q.y);
   }
 
+  // pre-tinted spectator variants so the crowd isn't a wall of clones
+  buildCrowdSprites() {
+    this.crowdSprites = [null, "#60a5fa", "#f472b6", "#a78bfa", "#34d399", "#fb923c"].map((col) => {
+      const c = this.cacheCanvas(this.tintCanvas.width, this.tintCanvas.height);
+      c.getContext("2d")!.drawImage(col ? this.tintedGopher(col) : this.gopherImg, 0, 0);
+      return c;
+    });
+  }
+
+  // an offscreen canvas that flags the caches for rebuild if the browser drops its pixels
+  cacheCanvas(w: number, h: number): HTMLCanvasElement {
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    const lost = () => (this.cachesLost = true);
+    c.addEventListener("contextlost", lost);
+    c.addEventListener("contextrestored", lost);
+    return c;
+  }
+
+  // rebuild every cached canvas if any was discarded; isContextLost catches a
+  // loss whose event fired while the tab was asleep
+  ensureCaches() {
+    const lost = (c: HTMLCanvasElement | null | undefined) =>
+      !!c && (c.getContext("2d") as CanvasRenderingContext2D & { isContextLost?: () => boolean }).isContextLost?.() === true;
+    if (!this.cachesLost && !lost(this.bgCache) && !lost(this.crowdScaled[0]) && !lost(this.crowdSprites[0])) return;
+    if ([this.bgCache, this.crowdScaled[0], this.crowdSprites[0]].some(lost)) return; // still lost: wait for restore
+    this.cachesLost = false;
+    this.bgCache = null;
+    this.crowdScaledW = 0;
+    this.buildCrowdSprites();
+  }
+
   drawCrowd(now: number) {
     if (this.crowdSprites.length === 0) return;
     this.crowd ??= this.buildCrowd();
@@ -1247,9 +1274,7 @@ class App {
     if (this.crowdScaledW !== w) {
       this.crowdScaledW = w;
       this.crowdScaled = this.crowdSprites.map((src) => {
-        const c = document.createElement("canvas");
-        c.width = Math.ceil(w);
-        c.height = Math.ceil(h);
+        const c = this.cacheCanvas(Math.ceil(w), Math.ceil(h));
         const g = c.getContext("2d")!;
         g.imageSmoothingQuality = "high";
         g.drawImage(src, 0, 0, w, h);
@@ -1347,8 +1372,15 @@ class App {
   addPopup(node: number, text: string, color: string) {
     const list = this.popups[node];
     const now = performance.now();
-    const last = list[list.length - 1];
-    if (last && last.text === text && now - last.start < 150) return; // same word, same instant: one is enough
+    // a word already on screen is refreshed in place rather than stacked again:
+    // with steady traffic, Success/commitIndex every heartbeat piled into a smear
+    const same = list.findIndex((p) => p.text === text);
+    if (same >= 0) {
+      const [p] = list.splice(same, 1);
+      if (now - p.start > POPUP_MS * 0.5) p.start = now;
+      list.push(p);
+      return;
+    }
     const r = this.nodeR();
     list.push({
       text,
@@ -1801,6 +1833,11 @@ class App {
       ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
       return;
     }
+    // always wipe the frame first: if the cached background is ever blank,
+    // drawing it would no longer cover the last frame and everything smears
+    ctx.fillStyle = "#5fb043";
+    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    this.ensureCaches();
     this.bgCache ??= this.buildBackground();
 
     // screen shake: a crash is a sudden, violent moment -- a brief

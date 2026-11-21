@@ -38,6 +38,28 @@ docker compose restart           # bounce everything; data is read back from dis
 Each `kvnodeN` has its own named volume (`kvnodeN-data`) holding
 `raftstate.bin` and `snapshot.bin`.
 
+## Sharded mode (shardkv + cross-shard 2PC transactions)
+
+`docker-compose.shard.yml` runs the sharded service: a shard controller
+(`shardctrl`, a kvsrv holding the shard config and 2PC decisions), two 3-node
+replica groups (`shardnode`), and `shardgateway` on `localhost:18081`. Group 1
+owns all 12 shards at first.
+
+```bash
+docker compose -f docker-compose.shard.yml up --build
+curl -X POST localhost:18081/admin/join -d '{"gid":2,"servers":["g2n0:9000","g2n1:9000","g2n2:9000"]}'
+curl localhost:18081/admin/config
+curl -X POST localhost:18081/txn -d '{
+  "compares":[{"Key":"alice","Version":1},{"Key":"carol","Version":1}],
+  "then":[{"Type":"Put","Key":"alice","Value":"70"},{"Type":"Put","Key":"carol","Value":"130"}],
+  "else":[]
+}'
+curl -X POST localhost:18081/admin/leave -d '{"gid":2}'
+```
+
+Transactions touching several shards use two-phase commit with two-phase
+locking across groups; see `internal/shardkv`.
+
 ## Layout
 
 ```
@@ -58,6 +80,12 @@ app/
     codec/                    gob encode/decode wrapper rpc/ and raft/ use for messages
     cluster/                  shared runtime types: Persister (persisted state), group id
     transport/                 real TCP transport plugged into rpc's SetCall hook
+    kvsrv/                    single-server versioned KV; the shard controller's storage
+    shardkv/                  sharded KV clerk; Txn is the 2PC coordinator
+      shardcfg/               shard -> group config, Join/Leave rebalancing
+      shardctrler/            moves shards between groups on config changes
+      shardgrp/               a replica group's server: per-shard data, locks, prepared txns
+        shardrpc/             Freeze/Install/Delete shard and TxnPrepare/TxnFinish wire types
     persist/                  mirrors cluster.Persister to disk so state survives a restart
     client/                   a Get/Put/Txn client over transport, used by kvgateway
   Dockerfile, .dockerignore   multi-stage build, context is app/ itself

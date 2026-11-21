@@ -70,3 +70,9 @@ type TxnReply struct {
 	Succeeded bool
 	Results   []TxnOpResult
 }
+
+// IKVClerk is the Get/Put interface shared by the kvsrv and shardkv clerks.
+type IKVClerk interface {
+	Get(string) (string, Tversion, Err)
+	Put(string, string, Tversion) Err
+}
