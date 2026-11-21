@@ -307,7 +307,7 @@ class App {
       const hit = this.nodeAt(mx, my);
       if (this.tool && hit !== null) {
         this.useTool(this.tool, hit);
-      } else if (!this.tryDefuseBombAt(mx, my)) {
+      } else {
         this.selectedNode = hit !== null && hit === this.selectedNode ? null : hit;
       }
     });
@@ -355,15 +355,6 @@ class App {
     return [(e.clientX - rect.left) * scaleX, (e.clientY - rect.top) * scaleY];
   }
 
-  tryDefuseBombAt(mx: number, my: number): boolean {
-    const bomb = this.bomber.bomb;
-    if (!bomb) return false;
-    const [nx, ny] = this.nodePos(bomb.node);
-    if (Math.hypot(mx - nx, my - (ny - 48)) < 16) {
-      return this.bomber.defuse();
-    }
-    return false;
-  }
 
   /** Returns the node ID whose body the given canvas coords land in, or null. */
   nodeAt(mx: number, my: number): number | null {
@@ -861,7 +852,7 @@ class App {
     // bomber only acts while the sim advances: a paused snapshot is stale
     if (this.snapshot && !this.frozen && this.playing) {
       this.bomber.heal(now, this.snapshot);
-      if (!this.election.active()) this.bomber.tick(now, this.snapshot);
+      if (!this.election.active()) this.bomber.tick(now, this.snapshot, this.isolated, (tool, node) => this.useTool(tool, node));
     }
     for (const [i, since] of this.isolated) if (now - since > ICE_MS) this.thaw(i, false);
     this.pollPendingRequest();
@@ -898,7 +889,7 @@ class App {
     return [cx + rx * Math.cos(angle), cy + ry * Math.sin(angle)];
   }
 
-  // node body center (what clicks, bombs and labels anchor to)
+  // node body center (what clicks and labels anchor to)
   nodePos(i: number): [number, number] {
     const [gx, gy] = this.groundPos(i);
     return [gx, gy - this.nodeR()];
@@ -1474,72 +1465,6 @@ class App {
     ctx.restore();
   }
 
-  renderBomber() {
-    const ctx = this.ctx;
-    const now = performance.now();
-    const bomb = this.bomber.bomb;
-
-    if (!bomb) {
-      // wandering mischief-maker: a small bobbing gremlin near its current
-      // target node, original design (no borrowed art/branding).
-      const [x, y] = this.nodePos(this.bomber.wanderNode);
-      const bob = Math.sin(now / 180) * 6;
-      const by = y - 48 + bob;
-      ctx.save();
-      ctx.shadowColor = "#c084fc";
-      ctx.shadowBlur = 8;
-      // body
-      ctx.fillStyle = "#c084fc";
-      ctx.beginPath();
-      ctx.ellipse(x, by, 9, 8, 0, 0, Math.PI * 2);
-      ctx.fill();
-      // horns
-      ctx.beginPath();
-      ctx.moveTo(x - 7, by - 5);
-      ctx.lineTo(x - 11, by - 13);
-      ctx.lineTo(x - 3, by - 8);
-      ctx.closePath();
-      ctx.moveTo(x + 7, by - 5);
-      ctx.lineTo(x + 11, by - 13);
-      ctx.lineTo(x + 3, by - 8);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-      // eyes (track a faint blink so it reads alive, not a static icon)
-      const blink = Math.sin(now / 500) > 0.95 ? 0.2 : 1;
-      ctx.fillStyle = "#fde047";
-      ctx.beginPath();
-      ctx.ellipse(x - 3, by, 1.6, 2 * blink, 0, 0, Math.PI * 2);
-      ctx.ellipse(x + 3, by, 1.6, 2 * blink, 0, 0, Math.PI * 2);
-      ctx.fill();
-      return;
-    }
-
-    const [x, y] = this.nodePos(bomb.node);
-    const by = y - 48;
-    const frac = Math.min(1, (now - bomb.plantedAt) / bomb.fuseMs);
-
-    ctx.fillStyle = bomb.defused ? "#64748b" : "#ef4444";
-    ctx.beginPath();
-    ctx.arc(x, by, 12, 0, Math.PI * 2);
-    ctx.fill();
-
-    if (!bomb.defused) {
-      ctx.strokeStyle = "#fde047";
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.arc(x, by, 18, -Math.PI / 2, -Math.PI / 2 + (1 - frac) * Math.PI * 2);
-      ctx.stroke();
-    }
-
-    if (frac >= 1 && !bomb.defused) {
-      // explosion flash on the final frame before crash() lands
-      ctx.fillStyle = "rgba(251, 191, 36, 0.6)";
-      ctx.beginPath();
-      ctx.arc(x, y, 50, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
 
   drawNode(n: ClusterSnapshot["Nodes"][number], now: number) {
     const ctx = this.ctx;
@@ -1895,7 +1820,6 @@ class App {
     this.drawToolFx(now);
     this.renderElectionBanner(now);
 
-    this.renderBomber();
     ctx.restore();
 
     this.renderInspector(snap);

@@ -2,12 +2,7 @@ import type { ClusterSnapshot, RaftUnderFireAPI } from "./wasm";
 
 export type ChaosMode = "calm" | "gremlin" | "storm" | "nightmare";
 
-export interface Bomb {
-  node: number;
-  plantedAt: number; // performance.now() ms
-  fuseMs: number;
-  defused: boolean;
-}
+export type Attack = "meteor" | "ice";
 
 const MODE_INTERVAL_MS: Record<ChaosMode, number> = {
   calm: Infinity,
@@ -18,18 +13,15 @@ const MODE_INTERVAL_MS: Record<ChaosMode, number> = {
 
 /**
  * Bomber is a purely client-side game-layer character: it decides *when*
- * and *which* node to threaten, then drives the simulation through the
- * same crash()/setNetwork() calls a player's own buttons use. It never
+ * and *which* node to attack, then uses the same Meteor / Ice tools the
+ * player has (plus setNetwork for Storm). It never
  * touches simulation state directly, so it adds no new safety-relevant
  * code to the Go/WASM side.
  */
 export class Bomber {
   mode: ChaosMode = "calm";
-  bomb: Bomb | null = null;
-  wanderNode = 0;
 
   private lastActionAt = 0;
-  private lastWanderAt = 0;
   private lastSeenAt = 0;
   private api: RaftUnderFireAPI;
   private deadSince = new Map<number, number>();
@@ -56,12 +48,10 @@ export class Bomber {
    */
   heal(now: number, snap: ClusterSnapshot) {
     // not called while paused: push every timer forward by the pause so a
-    // bomb doesn't detonate (or a node restart) the instant play resumes
+    // node restart or attack doesn't fire the instant play resumes
     const gap = now - this.lastSeenAt;
     if (this.lastSeenAt > 0 && gap > 1000) {
       this.lastActionAt += gap;
-      this.lastWanderAt += gap;
-      if (this.bomb) this.bomb.plantedAt += gap;
       for (const [id, t] of this.deadSince) this.deadSince.set(id, t + gap);
     }
     this.lastSeenAt = now;
@@ -83,51 +73,28 @@ export class Bomber {
     }
   }
 
-  /** Call once per frame with real (performance.now()) time and the latest snapshot. */
-  tick(now: number, snap: ClusterSnapshot) {
-    if (now - this.lastWanderAt > 900) {
-      this.lastWanderAt = now;
-      const alive = snap.Nodes.filter((n) => n.Alive);
-      if (alive.length > 0) {
-        this.wanderNode = alive[Math.floor(Math.random() * alive.length)].ID;
-      }
-    }
-
-    if (this.bomb) {
-      if (this.bomb.defused) {
-        this.bomb = null;
-      } else if (now - this.bomb.plantedAt >= this.bomb.fuseMs) {
-        // re-check at detonation: others may have died since the bomb was planted
-        if (snap.Nodes.filter((n) => n.Alive).length > 1) this.api.crash(this.bomb.node);
-        this.bomb = null;
-      }
-      return; // one bomb at a time
-    }
-
+  /**
+   * Call once per frame with real (performance.now()) time and the latest
+   * snapshot. When it's time, attacks one node with a randomly chosen tool
+   * (the same Meteor / Ice the player uses); `unavailable` are nodes already
+   * frozen, which it won't pick or count as standing.
+   */
+  tick(now: number, snap: ClusterSnapshot, unavailable: { has(id: number): boolean }, attack: (tool: Attack, node: number) => void) {
     const interval = MODE_INTERVAL_MS[this.mode];
     if (!isFinite(interval) || now - this.lastActionAt < interval) return;
 
-    const alive = snap.Nodes.filter((n) => n.Alive);
-    if (alive.length <= 1) return; // leave at least one node standing
+    const standing = snap.Nodes.filter((n) => n.Alive && !unavailable.has(n.ID));
+    if (standing.length <= 1) return; // leave at least one node standing
 
     let target: number;
     if (this.mode === "nightmare") {
-      const leader = alive.find((n) => n.Role === "leader");
-      target = leader ? leader.ID : alive[Math.floor(Math.random() * alive.length)].ID;
+      const leader = standing.find((n) => n.Role === "leader");
+      target = leader ? leader.ID : standing[Math.floor(Math.random() * standing.length)].ID;
     } else {
-      target = alive[Math.floor(Math.random() * alive.length)].ID;
+      target = standing[Math.floor(Math.random() * standing.length)].ID;
     }
 
     this.lastActionAt = now;
-    this.bomb = { node: target, plantedAt: now, fuseMs: 2200, defused: false };
-  }
-
-  /** Returns true if a live bomb was defused. */
-  defuse(): boolean {
-    if (this.bomb && !this.bomb.defused) {
-      this.bomb.defused = true;
-      return true;
-    }
-    return false;
+    attack(Math.random() < 0.5 ? "meteor" : "ice", target);
   }
 }
