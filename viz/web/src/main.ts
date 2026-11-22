@@ -901,10 +901,20 @@ class App {
   plaza() {
     const W = this.canvas.width;
     const H = this.canvas.height;
-    // narrower than the window: the floating side panels cover the edges
+    // narrower than the window: the floating side panels cover the edges.
+    // On phones the panels sit above and below, so the plaza takes the width.
+    if (this.narrow()) {
+      const rx = Math.min(W * 0.36, H * 0.3);
+      const ry = rx * 0.52;
+      return { cx: W / 2, cy: H * 0.56, rx, ry, px: rx * 1.5, py: ry * 1.5 };
+    }
     const rx = Math.min(W * 0.25, H * 0.6);
     const ry = rx * 0.52;
     return { cx: W / 2, cy: H * 0.55, rx, ry, px: rx * 1.5, py: ry * 1.5 };
+  }
+
+  narrow(): boolean {
+    return this.canvas.width < 700;
   }
 
   nodeR(): number {
@@ -1669,7 +1679,12 @@ class App {
     const ease = 1 - Math.pow(1 - t, 3);
     const overshoot = t < 1 ? Math.sin(t * Math.PI) * 10 : 0;
     const cx = this.canvas.width / 2;
-    const cy = -60 + (60 + 62) * ease + overshoot + Math.sin(now / 500) * 2;
+    // on phones the HTML cards cover the top, so the ribbon rises from the bottom
+    // into the strip above the client request card
+    const H = this.canvas.height;
+    const [from, rest] = this.narrow() ? [H + 60, H - 200] : [-60, 62];
+    const dir = Math.sign(rest - from);
+    const cy = from + (rest - from) * ease + dir * overshoot + Math.sin(now / 500) * 2;
 
     ctx.save();
     ctx.font = titleFont;
@@ -1677,6 +1692,8 @@ class App {
     const h = 64;
     const tail = 44;
     ctx.translate(cx, cy);
+    const fit = Math.min(1, (this.canvas.width - 12) / (w + tail * 2));
+    ctx.scale(fit, fit);
 
     // folded tails behind the ribbon
     for (const side of [-1, 1]) {

@@ -1104,3 +1104,134 @@ body {
 .left-controls .chaos-select button[data-mode="storm"]:hover {
   transform: translateY(-1px);
 }
+
+/* --- phones: controls in one row on top, tools down the right edge,
+   a compact inspector on the left, client request + linearizability at the bottom --- */
+@media (max-width: 700px) {
+  .leftside {
+    display: contents; /* let its two cards be placed on their own */
+  }
+
+  .panel-card {
+    padding: 6px 8px;
+    gap: 4px;
+  }
+
+  .panel-card-title {
+    font-size: 11px;
+  }
+
+  .left-controls {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    z-index: 5;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .left-controls .panel-card-title {
+    order: 3;
+    font-size: 0; /* hide the word "Controls", keep the safety badge */
+    margin-left: auto;
+  }
+
+  .left-controls .safety {
+    font-size: 10px;
+    padding: 3px 6px;
+  }
+
+  .left-controls .control-row {
+    gap: 4px;
+  }
+
+  .left-controls .icon-btn {
+    width: 36px;
+    height: 36px;
+  }
+
+  .left-controls .chaos-select {
+    display: flex;
+    gap: 3px;
+    padding: 3px;
+  }
+
+  .left-controls .chaos-select button {
+    width: 34px;
+    height: 32px;
+    padding: 0;
+  }
+
+  .left-controls .chaos-select button span {
+    display: none;
+  }
+
+  .inspector-card {
+    position: absolute;
+    top: 68px;
+    left: 8px;
+    width: 132px;
+    z-index: 5;
+  }
+
+  .inspector-card .portrait-frame,
+  .inspector-card .inspector-hint {
+    display: none;
+  }
+
+  .inspector-body {
+    font-size: 11px;
+    line-height: 1.35;
+  }
+
+  .toolbar {
+    top: 68px;
+    right: 8px;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .toolbar button {
+    width: 46px;
+    height: 46px;
+    padding: 5px;
+    border-width: 2px;
+    border-bottom-width: 4px;
+  }
+
+  .side {
+    top: auto;
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    width: auto;
+    overflow: visible;
+  }
+
+  .controls {
+    gap: 6px;
+  }
+
+  .manual-request input {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .req-result:empty,
+  .lin-result:empty {
+    display: none;
+  }
+
+  .gopher-credit {
+    display: none;
+  }
+}
+
+/* short phone screens (landscape): no room for the inspector between the top and bottom cards */
+@media (max-width: 700px) and (max-height: 600px) {
+  .inspector-card {
+    display: none;
+  }
+}
