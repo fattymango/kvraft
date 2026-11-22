@@ -90,7 +90,29 @@ const POPUP: Record<string, { text: string; color: string }> = {
 };
 const POPUP_MS = 1100;
 const ELECTION_ACTION = new Set(["become_candidate", "request_vote_sent", "vote_granted", "vote_denied", "become_leader"]);
-const MAX_POPUPS = 3; // words stacked on one gopher at once
+const MAX_POPUPS = 3;
+// election title card colors per chaos theme: danger = leader down, gold = new leader
+type BannerPal = { light: string; base: string; dark: string; edge: string; glow: string; subText: string };
+const BANNER_THEME: Record<ChaosMode, { danger: BannerPal; gold: BannerPal }> = {
+  calm: {
+    danger: { light: "#ff7a5c", base: "#c2362a", dark: "#8f2219", edge: "#4a120c", glow: "#ff9b7a", subText: "#ffd8c8" },
+    gold: { light: "#ffd166", base: "#e08a12", dark: "#a8600a", edge: "#5a3104", glow: "#ffe08a", subText: "#fff1c2" },
+  },
+  gremlin: {
+    danger: { light: "#c084fc", base: "#7e22ce", dark: "#581c87", edge: "#2e0a4a", glow: "#e9a8ff", subText: "#f3d9ff" },
+    gold: { light: "#fdba74", base: "#ea580c", dark: "#9a3412", edge: "#431407", glow: "#fed7aa", subText: "#ffedd5" },
+  },
+  storm: {
+    danger: { light: "#7dd3fc", base: "#1e5f8c", dark: "#164063", edge: "#0b1d30", glow: "#bae6fd", subText: "#dbeafe" },
+    gold: { light: "#fde68a", base: "#ca8a04", dark: "#854d0e", edge: "#3b2304", glow: "#fef3c7", subText: "#fef9c3" },
+  },
+  nightmare: {
+    danger: { light: "#dc2626", base: "#7f1d1d", dark: "#4c0d0d", edge: "#1a0404", glow: "#ff3b3b", subText: "#fecaca" },
+    gold: { light: "#fb923c", base: "#9a3412", dark: "#5c1d08", edge: "#1f0a03", glow: "#fdba74", subText: "#fed7aa" },
+  },
+};
+// scenery + crowd lighting per chaos mode (multiplied over the daytime art)
+const THEME_TINT: Record<string, string | undefined> = { gremlin: "#7b5aa6", storm: "#5d6b7c", nightmare: "#6a2a30" }; // words stacked on one gopher at once
 const LOG_LINES = 120;
 const STEP_BUDGET_MS = 8;
 
@@ -156,7 +178,8 @@ class App {
   private ctx: CanvasRenderingContext2D;
   private playing = false;
   private frozen = false;
-  private readonly stepsPerFrame = 8; // fixed: slower speeds felt laggy
+  private readonly stepsPerFrame = 6.8; // fixed; 15% under the old 8 (fractions carry to the next frame)
+  private stepCarry = 0;
   private logBuffer: TraceEvent[] = [];
   private nextElectionStepAt = 0;
   private trafficPausedForElection = false;
@@ -269,6 +292,8 @@ class App {
       for (const b of chaosDiv.querySelectorAll("button")) b.classList.remove("active");
       btn.classList.add("active");
       this.bomber.setMode(btn.dataset.mode as ChaosMode);
+      this.bgCache = null; // repaint the scenery and crowd for the new mode's theme
+      this.crowdScaledW = 0;
     });
     document.getElementById("btnSound")!.addEventListener("click", (e) => {
       this.sound.enabled = !this.sound.enabled;
@@ -846,13 +871,17 @@ class App {
           this.nextElectionStepAt = now + (action ? 220 : 25);
         }
       } else {
-        this.doSteps(this.stepsPerFrame);
+        this.stepCarry += this.stepsPerFrame;
+        const n = Math.floor(this.stepCarry);
+        this.stepCarry -= n;
+        if (n > 0) this.doSteps(n);
       }
     }
     // bomber only acts while the sim advances: a paused snapshot is stale
     if (this.snapshot && !this.frozen && this.playing) {
       this.bomber.heal(now, this.snapshot);
-      if (!this.election.active()) this.bomber.tick(now, this.snapshot, this.isolated, (tool, node) => this.useTool(tool, node));
+      if (this.election.active()) this.bomber.holdOff(now);
+      else this.bomber.tick(now, this.snapshot, this.isolated, (tool, node) => this.useTool(tool, node));
     }
     for (const [i, since] of this.isolated) if (now - since > ICE_MS) this.thaw(i, false);
     this.pollPendingRequest();
@@ -1180,12 +1209,17 @@ class App {
     g.closePath();
     g.stroke();
 
-    // warm afternoon sun from the top-left
-    const sun = g.createRadialGradient(W * 0.15, -H * 0.1, 0, W * 0.15, -H * 0.1, Math.max(W, H));
-    sun.addColorStop(0, "rgba(255, 236, 180, 0.28)");
-    sun.addColorStop(1, "rgba(255, 236, 180, 0)");
-    g.fillStyle = sun;
-    g.fillRect(0, 0, W, H);
+    const mode = this.bomber?.mode ?? "calm";
+    if (mode === "calm") {
+      // warm afternoon sun from the top-left
+      const sun = g.createRadialGradient(W * 0.15, -H * 0.1, 0, W * 0.15, -H * 0.1, Math.max(W, H));
+      sun.addColorStop(0, "rgba(255, 236, 180, 0.28)");
+      sun.addColorStop(1, "rgba(255, 236, 180, 0)");
+      g.fillStyle = sun;
+      g.fillRect(0, 0, W, H);
+    } else {
+      this.paintTheme(g, mode, W, H, rnd);
+    }
     return c;
   }
 
@@ -1269,6 +1303,15 @@ class App {
         const g = c.getContext("2d")!;
         g.imageSmoothingQuality = "high";
         g.drawImage(src, 0, 0, w, h);
+        const tint = THEME_TINT[this.bomber.mode];
+        if (tint) {
+          // match the crowd to the mode's lighting, clipped to the sprite
+          g.globalCompositeOperation = "multiply";
+          g.fillStyle = tint;
+          g.fillRect(0, 0, c.width, c.height);
+          g.globalCompositeOperation = "destination-in";
+          g.drawImage(src, 0, 0, w, h);
+        }
         return c;
       });
     }
@@ -1310,6 +1353,203 @@ class App {
         ctx.fill();
         ctx.stroke();
       }
+    }
+  }
+
+  // darken/recolor the scenery for a chaos mode and add its props
+  paintTheme(g: CanvasRenderingContext2D, mode: ChaosMode, W: number, H: number, rnd: () => number) {
+    const tint = THEME_TINT[mode]!;
+    g.save();
+    g.globalCompositeOperation = "multiply";
+    g.fillStyle = tint;
+    g.fillRect(0, 0, W, H);
+    g.restore();
+
+    const offPlaza = (x: number, y: number) => {
+      const [a, b] = this.screenToIso(x, y);
+      return Math.max(Math.abs(a), Math.abs(b)) > 1.75;
+    };
+    const spots = (n: number) => {
+      const out: [number, number][] = [];
+      for (let k = 0; k < n * 6 && out.length < n; k++) {
+        const x = rnd() * W, y = H * 0.12 + rnd() * H * 0.88;
+        if (offPlaza(x, y)) out.push([x, y]);
+      }
+      return out.sort((p, q) => p[1] - q[1]);
+    };
+
+    if (mode === "nightmare") {
+      // blood moon
+      const mx = W * 0.82, my = H * 0.14, mr = Math.min(W, H) * 0.07;
+      const glow = g.createRadialGradient(mx, my, mr * 0.5, mx, my, mr * 3);
+      glow.addColorStop(0, "rgba(255, 70, 50, 0.45)");
+      glow.addColorStop(1, "rgba(255, 70, 50, 0)");
+      g.fillStyle = glow;
+      g.fillRect(mx - mr * 3, my - mr * 3, mr * 6, mr * 6);
+      g.fillStyle = "#e0442f";
+      g.beginPath();
+      g.arc(mx, my, mr, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = "rgba(120, 20, 15, 0.35)";
+      for (const [ox, oy, rr] of [[-0.3, -0.2, 0.22], [0.25, 0.15, 0.16], [-0.05, 0.35, 0.12]]) {
+        g.beginPath();
+        g.arc(mx + ox * mr, my + oy * mr, rr * mr, 0, Math.PI * 2);
+        g.fill();
+      }
+      for (const [x, y] of spots(14)) this.drawTombstone(g, x, y, 14 + rnd() * 10, rnd);
+    }
+    if (mode === "nightmare" || mode === "gremlin") {
+      for (const [x, y] of spots(mode === "nightmare" ? 10 : 14)) this.drawPumpkin(g, x, y, 9 + rnd() * 8, mode === "nightmare");
+    }
+    if (mode === "storm") {
+      // puddles
+      for (const [x, y] of spots(16)) {
+        g.fillStyle = "rgba(160, 190, 215, 0.35)";
+        g.beginPath();
+        g.ellipse(x, y, 18 + rnd() * 26, 5 + rnd() * 6, 0, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+  }
+
+  drawPumpkin(g: CanvasRenderingContext2D, x: number, y: number, s: number, glowing: boolean) {
+    g.fillStyle = "rgba(0, 0, 0, 0.3)";
+    g.beginPath();
+    g.ellipse(x, y + s * 0.8, s * 1.2, s * 0.35, 0, 0, Math.PI * 2);
+    g.fill();
+    for (const [ox, rr] of [[-0.55, 0.75], [0.55, 0.75], [0, 0.9]] as const) {
+      g.fillStyle = ox === 0 ? "#f97316" : "#ea580c";
+      g.beginPath();
+      g.ellipse(x + ox * s, y, rr * s, s * 0.85, 0, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.fillStyle = "#4d7c0f";
+    g.fillRect(x - s * 0.1, y - s * 1.15, s * 0.2, s * 0.4);
+    // jack-o'-lantern face
+    if (glowing) {
+      g.shadowColor = "#fde047";
+      g.shadowBlur = 10;
+    }
+    g.fillStyle = glowing ? "#fde047" : "#7c2d12";
+    g.beginPath();
+    g.moveTo(x - s * 0.5, y - s * 0.15); g.lineTo(x - s * 0.25, y - s * 0.45); g.lineTo(x - s * 0.1, y - s * 0.15);
+    g.moveTo(x + s * 0.5, y - s * 0.15); g.lineTo(x + s * 0.25, y - s * 0.45); g.lineTo(x + s * 0.1, y - s * 0.15);
+    g.fill();
+    g.beginPath();
+    g.moveTo(x - s * 0.55, y + s * 0.2);
+    g.quadraticCurveTo(x, y + s * 0.75, x + s * 0.55, y + s * 0.2);
+    g.quadraticCurveTo(x, y + s * 0.45, x - s * 0.55, y + s * 0.2);
+    g.fill();
+    g.shadowBlur = 0;
+  }
+
+  drawTombstone(g: CanvasRenderingContext2D, x: number, y: number, s: number, rnd: () => number) {
+    g.save();
+    g.translate(x, y);
+    g.rotate((rnd() - 0.5) * 0.25);
+    g.fillStyle = "rgba(0, 0, 0, 0.35)";
+    g.beginPath();
+    g.ellipse(0, 0, s * 1.1, s * 0.3, 0, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = "#9ca3af";
+    g.strokeStyle = "#374151";
+    g.lineWidth = 2;
+    g.beginPath();
+    g.moveTo(-s * 0.7, 0);
+    g.lineTo(-s * 0.7, -s * 1.3);
+    g.arc(0, -s * 1.3, s * 0.7, Math.PI, 0);
+    g.lineTo(s * 0.7, 0);
+    g.closePath();
+    g.fill();
+    g.stroke();
+    g.strokeStyle = "#4b5563";
+    g.beginPath();
+    g.moveTo(0, -s * 1.6); g.lineTo(0, -s * 0.8);
+    g.moveTo(-s * 0.3, -s * 1.35); g.lineTo(s * 0.3, -s * 1.35);
+    g.stroke();
+    g.restore();
+  }
+
+  // live weather on top of everything: rain + lightning (storm), bats (gremlin/nightmare), fog (nightmare)
+  drawWeather(now: number) {
+    const mode = this.bomber.mode;
+    if (mode === "calm") return;
+    const ctx = this.ctx;
+    const W = this.canvas.width, H = this.canvas.height;
+    if (mode === "storm") {
+      ctx.save();
+      ctx.strokeStyle = "rgba(190, 215, 240, 0.45)";
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      for (let i = 0; i < 220; i++) {
+        const sx = (i * 97.13) % W;
+        const speed = 0.9 + ((i * 37) % 10) / 20;
+        const y = ((i * 211.7 + now * speed) % (H + 40)) - 20;
+        const x = (sx + y * 0.25) % W;
+        ctx.moveTo(x, y);
+        ctx.lineTo(x - 4, y - 16);
+      }
+      ctx.stroke();
+      ctx.restore();
+      // lightning: a bright flash plus a jagged bolt, every few seconds
+      const cycle = now % 5200;
+      if (cycle < 260) {
+        const flash = cycle < 90 ? 0.55 : cycle < 140 ? 0.15 : cycle < 200 ? 0.4 : 0;
+        ctx.fillStyle = `rgba(235, 240, 255, ${flash})`;
+        ctx.fillRect(0, 0, W, H);
+        if (flash > 0.3) {
+          const seed = Math.floor(now / 5200);
+          let x = W * (0.2 + ((seed * 0.37) % 0.6)), y = 0;
+          ctx.save();
+          ctx.strokeStyle = "#fefce8";
+          ctx.shadowColor = "#bfdbfe";
+          ctx.shadowBlur = 18;
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          for (let k = 1; k <= 9; k++) {
+            x += Math.sin(seed * 13 + k * 2.1) * 30;
+            y = (H * 0.5 * k) / 9;
+            ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+    }
+    if (mode === "nightmare") {
+      ctx.save();
+      for (let i = 0; i < 6; i++) {
+        const fx = ((i * 331 + now * 0.012 * (i % 2 ? 1 : -1)) % (W + 600)) - 300;
+        const fy = H * (0.35 + (i % 3) * 0.22);
+        const fog = ctx.createRadialGradient(fx, fy, 10, fx, fy, 320);
+        fog.addColorStop(0, "rgba(200, 190, 210, 0.12)");
+        fog.addColorStop(1, "rgba(200, 190, 210, 0)");
+        ctx.fillStyle = fog;
+        ctx.fillRect(fx - 320, fy - 320, 640, 640);
+      }
+      ctx.restore();
+    }
+    if (mode === "gremlin" || mode === "nightmare") {
+      ctx.save();
+      ctx.fillStyle = "#120a16";
+      const bats = mode === "nightmare" ? 9 : 6;
+      for (let i = 0; i < bats; i++) {
+        const t = now / 1000 + i * 1.7;
+        const x = ((i * 271 + t * (60 + i * 9)) % (W + 120)) - 60;
+        const y = H * 0.08 + ((i * 53) % (H * 0.3)) + Math.sin(t * 2 + i) * 18;
+        const flap = Math.sin(t * 14 + i) * 0.8;
+        const s = 7 + (i % 3) * 3;
+        ctx.beginPath();
+        ctx.ellipse(x, y, s * 0.35, s * 0.25, 0, 0, Math.PI * 2);
+        ctx.moveTo(x, y);
+        ctx.quadraticCurveTo(x - s * 0.8, y - s * flap, x - s * 1.6, y - s * 0.2 * flap);
+        ctx.quadraticCurveTo(x - s * 0.9, y + s * 0.15, x, y);
+        ctx.quadraticCurveTo(x + s * 0.9, y + s * 0.15, x + s * 1.6, y - s * 0.2 * flap);
+        ctx.quadraticCurveTo(x + s * 0.8, y - s * flap, x, y);
+        ctx.fill();
+      }
+      ctx.restore();
     }
   }
 
@@ -1414,41 +1654,110 @@ class App {
 
   // white text with a dark outline: readable on stone, grass, or the dimmed overlay
   // chunky ribbon at the top of the stage so viewers know what they're watching
+  // game title card: a ribbon with folded tails that drops in from the top,
+  // colored to match the current chaos theme
   renderElectionBanner(now: number) {
-    const banner = this.election.banner();
+    const banner = this.election.banner(now);
     if (!banner) return;
     const ctx = this.ctx;
-    const danger = banner.tone === "danger";
-    const font = '900 20px "Arial Black", Impact, system-ui, sans-serif';
-    const pop = 1 + 0.03 * Math.sin(now / 160);
+    const pal = BANNER_THEME[this.bomber.mode][banner.tone];
+    const titleFont = '900 30px "Arial Black", Impact, system-ui, sans-serif';
+    const subFont = '800 13px "Trebuchet MS", system-ui, sans-serif';
+
+    // drop in with a little overshoot, then float
+    const t = Math.min(1, banner.age / 380);
+    const ease = 1 - Math.pow(1 - t, 3);
+    const overshoot = t < 1 ? Math.sin(t * Math.PI) * 10 : 0;
     const cx = this.canvas.width / 2;
-    const cy = 44;
+    const cy = -60 + (60 + 62) * ease + overshoot + Math.sin(now / 500) * 2;
+
     ctx.save();
+    ctx.font = titleFont;
+    const w = Math.max(340, ctx.measureText(banner.title).width + 120);
+    const h = 64;
+    const tail = 44;
     ctx.translate(cx, cy);
-    ctx.scale(pop, pop);
-    ctx.font = font;
-    const w = ctx.measureText(banner.text).width + 60;
-    const h = 46;
-    ctx.fillStyle = "rgba(15, 23, 42, 0.45)";
+
+    // folded tails behind the ribbon
+    for (const side of [-1, 1]) {
+      const x0 = side * (w / 2 - 14);
+      const x1 = side * (w / 2 + tail);
+      ctx.fillStyle = pal.dark;
+      ctx.beginPath();
+      ctx.moveTo(x0, -h / 2 + 14);
+      ctx.lineTo(x1, -h / 2 + 14);
+      ctx.lineTo(x1 - side * 16, 8);
+      ctx.lineTo(x1, h / 2 + 12);
+      ctx.lineTo(x0, h / 2 + 12);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = pal.edge;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      // fold shadow
+      ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
+      ctx.beginPath();
+      ctx.moveTo(side * (w / 2 - 14), h / 2);
+      ctx.lineTo(side * (w / 2), h / 2);
+      ctx.lineTo(side * (w / 2 - 14), h / 2 + 12);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // drop shadow + main ribbon
+    ctx.fillStyle = "rgba(0, 0, 0, 0.4)";
     ctx.beginPath();
-    ctx.roundRect(-w / 2 + 3, -h / 2 + 5, w, h, 10);
+    ctx.roundRect(-w / 2 + 4, -h / 2 + 7, w, h, 12);
     ctx.fill();
     const grad = ctx.createLinearGradient(0, -h / 2, 0, h / 2);
-    grad.addColorStop(0, danger ? "#f87171" : "#fbbf24");
-    grad.addColorStop(1, danger ? "#b91c1c" : "#b45309");
+    grad.addColorStop(0, pal.light);
+    grad.addColorStop(1, pal.base);
     ctx.fillStyle = grad;
-    ctx.strokeStyle = danger ? "#7f1d1d" : "#78350f";
-    ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.roundRect(-w / 2, -h / 2, w, h, 10);
+    ctx.roundRect(-w / 2, -h / 2, w, h, 12);
     ctx.fill();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = pal.edge;
     ctx.stroke();
-    ctx.fillStyle = "rgba(255, 255, 255, 0.25)";
+    // inner cream trim, like the panels
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(255, 244, 220, 0.75)";
     ctx.beginPath();
-    ctx.roundRect(-w / 2 + 4, -h / 2 + 3, w - 8, h * 0.4, 8);
+    ctx.roundRect(-w / 2 + 6, -h / 2 + 6, w - 12, h - 12, 8);
+    ctx.stroke();
+    // glossy top
+    ctx.fillStyle = "rgba(255, 255, 255, 0.18)";
+    ctx.beginPath();
+    ctx.roundRect(-w / 2 + 8, -h / 2 + 8, w - 16, h * 0.32, 6);
     ctx.fill();
+    // rivets
+    ctx.fillStyle = "rgba(255, 244, 220, 0.9)";
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.arc(side * (w / 2 - 20), 0, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.restore();
-    this.outlinedText(banner.text, cx, cy + 7, font);
+
+    // title + subtitle plate
+    const pulse = banner.tone === "danger" ? 0.6 + 0.4 * Math.sin(now / 140) : 1;
+    ctx.save();
+    ctx.shadowColor = pal.glow;
+    ctx.shadowBlur = 14 * pulse;
+    this.outlinedText(banner.title, cx, cy + 9, titleFont, "#fff4dc");
+    ctx.restore();
+    ctx.save();
+    ctx.font = subFont;
+    const sw = ctx.measureText(banner.subtitle).width + 26;
+    ctx.fillStyle = pal.edge;
+    ctx.beginPath();
+    ctx.roundRect(cx - sw / 2, cy + h / 2 - 4, sw, 20, 10);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255, 244, 220, 0.8)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.restore();
+    this.outlinedText(banner.subtitle, cx, cy + h / 2 + 10.5, subFont, pal.subText);
   }
 
   outlinedText(text: string, x: number, y: number, font: string, fill = "#ffffff") {
@@ -1818,6 +2127,7 @@ class App {
       this.drawNode(n, now);
     }
     this.drawToolFx(now);
+    this.drawWeather(now);
     this.renderElectionBanner(now);
 
     ctx.restore();

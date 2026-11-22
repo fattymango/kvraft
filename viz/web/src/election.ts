@@ -66,10 +66,13 @@ export class ElectionDirector {
     return this.phase !== "idle";
   }
 
-  banner(): { text: string; tone: "danger" | "gold" } | null {
-    if (this.phase === "inProgress") return { text: "⚡ LEADER DOWN — ELECTION IN PROGRESS ⚡", tone: "danger" };
-    if (this.phase === "crowning") return { text: `👑 n${this.newLeader} ELECTED — TERM ${this.newTerm}`, tone: "gold" };
+  /** Title card for the current phase; `age` is ms since the phase began (for the slide-in). */
+  banner(now: number): { title: string; subtitle: string; tone: "danger" | "gold"; age: number } | null {
+    const age = now - this.phaseStart;
+    if (this.phase === "inProgress") return { title: "LEADER DOWN", subtitle: "ELECTION IN PROGRESS", tone: "danger", age };
+    if (this.phase === "crowning") return { title: `n${this.newLeader} IS LEADER`, subtitle: `TERM ${this.newTerm}`, tone: "gold", age };
     return null;
   }
+
 
 }

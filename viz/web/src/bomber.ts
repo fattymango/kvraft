@@ -7,9 +7,13 @@ export type Attack = "meteor" | "ice";
 const MODE_INTERVAL_MS: Record<ChaosMode, number> = {
   calm: Infinity,
   gremlin: 4000,
-  storm: 2200,
-  nightmare: 3000,
+  storm: 4500,
+  nightmare: 6000,
 };
+
+// how many gophers may be down (crashed or frozen) before the bomber waits:
+// one failure at a time keeps Storm/Nightmare followable
+const MAX_DOWN: Record<ChaosMode, number> = { calm: 0, gremlin: 2, storm: 1, nightmare: 1 };
 
 /**
  * Bomber is a purely client-side game-layer character: it decides *when*
@@ -34,8 +38,9 @@ export class Bomber {
   setMode(mode: ChaosMode) {
     this.mode = mode;
     this.deadSince.clear(); // avoid an instant restart from a stale timer after switching modes
+    this.lastActionAt = performance.now(); // a full interval of grace before the first attack
     if (mode === "storm") {
-      this.api.setNetwork({ latencyMs: 25, jitterMs: 40, dropRate: 0.2, dupRate: 0.05 });
+      this.api.setNetwork({ latencyMs: 25, jitterMs: 40, dropRate: 0.08, dupRate: 0.02 });
     } else {
       this.api.setNetwork({ latencyMs: 20, jitterMs: 10, dropRate: 0, dupRate: 0 });
     }
@@ -73,6 +78,11 @@ export class Bomber {
     }
   }
 
+  /** Restart the attack timer: called during elections, so the new leader gets a full interval to settle. */
+  holdOff(now: number) {
+    this.lastActionAt = now;
+  }
+
   /**
    * Call once per frame with real (performance.now()) time and the latest
    * snapshot. When it's time, attacks one node with a randomly chosen tool
@@ -85,6 +95,7 @@ export class Bomber {
 
     const standing = snap.Nodes.filter((n) => n.Alive && !unavailable.has(n.ID));
     if (standing.length <= 1) return; // leave at least one node standing
+    if (snap.Nodes.length - standing.length >= MAX_DOWN[this.mode]) return;
 
     let target: number;
     if (this.mode === "nightmare") {
